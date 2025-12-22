@@ -1,0 +1,208 @@
+---
+- name: Patch Linux servers and generate JSON report
+  hosts: '*'
+  become: true
+  become_user: root
+  gather_facts: yes
+
+  vars:
+    ansible_remote_tmp: /tmp
+    consolidated_report_path: linux_patch_report.json
+
+  tasks:
+# Initial Facts ----------------------------------------------
+    - name: Initialize per-host report structure
+      ansible.builtin.set_fact:
+        upgrade_report_json:
+          host: "{{ inventory_hostname }}"
+          os_family: "{{ ansible_os_family }}"
+          distribution: "{{ ansible_distribution }}"
+          upgrade:
+            changed: false
+            packages: []
+          reboot:
+            required: false
+            performed: false
+          uptime:
+            boot_time: null
+            uptime_pretty: null
+
+# RHEL FAMILY ----------------------------------------------------------------------------------
+    - name: Patch RHEL family
+      block:
+        - name: Gather package facts BEFORE upgrade (RHEL)
+          ansible.builtin.package_facts:
+            manager: auto
+          register: rhel_facts_before
+
+        - name: Preview packages that WOULD be upgraded (RHEL)
+          ansible.builtin.package:
+            name: "*"
+            state: latest
+          check_mode: true
+          register: rhel_update_preview
+          ignore_errors: true
+
+        - name: Show RHEL preview on console
+          ansible.builtin.debug:
+            msg:
+              - "===== RHEL PREVIEW ====="
+              - "Host: {{ inventory_hostname }}"
+              - "{{ rhel_update_preview.results | default([]) }}"
+
+        - name: Upgrade all packages (RHEL)
+          ansible.builtin.package:
+            name: "*"
+            state: latest
+          register: rhel_update_result
+
+        - name: Gather package facts AFTER upgrade (RHEL)
+          ansible.builtin.package_facts:
+            manager: auto
+
+        - name: Check if reboot is required (RHEL)
+          ansible.builtin.command: needs-restarting -r
+          register: rhel_reboot_check
+          ignore_errors: true
+          changed_when: rhel_reboot_check.rc == 1
+          failed_when: rhel_reboot_check.rc > 1
+
+        - name: Build RHEL JSON report
+          ansible.builtin.set_fact:
+            upgrade_report_json: >-
+              {{
+                upgrade_report_json | combine({
+                  'upgrade': {
+                    'changed': rhel_update_result.changed | default(false),
+                    'packages': rhel_update_result.results | default([])
+                  },
+                  'reboot': {
+                    'required': rhel_update_result.changed | default(false),
+                    'performed': false
+                  }
+                }, recursive=True)
+              }}
+      when: ansible_os_family == "RedHat"
+
+# DEBIAN / UBUNTU FAMILY ----------------------------------------------------------------------------------
+    - name: Patch Debian/Ubuntu family
+      block:
+        - name: Gather package facts BEFORE upgrade (Ubuntu)
+          ansible.builtin.package_facts:
+            manager: auto
+          register: ubuntu_facts_before
+
+        - name: Preview packages that WOULD be upgraded (Ubuntu)
+          ansible.builtin.package:
+            name: "*"
+            state: latest
+          check_mode: true
+          register: ubuntu_update_preview
+          ignore_errors: true
+
+        - name: Show Ubuntu preview on console
+          ansible.builtin.debug:
+            msg:
+              - "===== UBUNTU PREVIEW ====="
+              - "Host: {{ inventory_hostname }}"
+              - "{{ ubuntu_update_preview.results | default([]) }}"
+
+        - name: Update apt cache
+          ansible.builtin.apt:
+            update_cache: yes
+            cache_valid_time: 3600
+
+        - name: Upgrade all packages (Ubuntu)
+          ansible.builtin.package:
+            name: "*"
+            state: latest
+          register: ubuntu_update_result
+
+        - name: Check reboot-required flag (Ubuntu)
+          ansible.builtin.stat:
+            path: /var/run/reboot-required
+          register: ubuntu_reboot_flag
+
+        - name: Build Ubuntu JSON report
+          ansible.builtin.set_fact:
+            upgrade_report_json: >-
+              {{
+                upgrade_report_json | combine({
+                  'upgrade': {
+                    'changed': ubuntu_update_result.changed | default(false),
+                    'packages': ubuntu_update_result.results | default([])
+                  },
+                  'reboot': {
+                    'required': ubuntu_update_result.changed | default(false),
+                    'performed': false
+                  }
+                }, recursive=True)
+              }}
+      when: ansible_os_family == "Debian" or ansible_distribution == "Ubuntu"
+
+# REBOOT (IF REQUIRED) ----------------------------------------------------------------------------------
+    - name: Reboot servers if required
+      ansible.builtin.reboot:
+        reboot_timeout: 1200
+      when: upgrade_report_json.reboot.required
+      register: reboot_action
+
+    - name: Mark reboot performed
+      ansible.builtin.set_fact:
+        upgrade_report_json: >-
+          {{
+            upgrade_report_json | combine({
+              'reboot': upgrade_report_json.reboot | combine({
+                'performed': true
+              })
+            }, recursive=True)
+          }}
+      when: reboot_action is defined
+
+# POST-REBOOT UPTIME ----------------------------------------------------------------------------------
+    - name: Wait for host after reboot
+      ansible.builtin.wait_for_connection:
+        timeout: 180
+      when: upgrade_report_json.reboot.performed
+
+    - name: Collect uptime
+      ansible.builtin.command: uptime -p
+      register: uptime_check
+      changed_when: false
+
+    - name: Collect boot time
+      ansible.builtin.command: uptime -s
+      register: uptime_since
+      changed_when: false
+
+    - name: Save uptime in JSON report
+      ansible.builtin.set_fact:
+        upgrade_report_json: >-
+          {{
+            upgrade_report_json | combine({
+              'uptime': {
+                'boot_time': uptime_since.stdout | default(null),
+                'uptime_pretty': uptime_check.stdout | default(null)
+              }
+            }, recursive=True)
+          }}
+
+# CONSOLIDATED JSON REPORT ----------------------------------------------------------------------------------
+    - name: Write consolidated JSON report (single file)
+      ansible.builtin.copy:
+        dest: "{{ consolidated_report_path }}"
+        mode: "0644"
+        content: >-
+          {{
+            {
+              "generated_at": ansible_date_time.iso8601,
+              "hosts": play_hosts | map('extract', hostvars, 'upgrade_report_json') | list
+            } | to_nice_json
+          }}
+      delegate_to: localhost
+      run_once: true
+
+# SHOW UPTIME INFO ------------------------------------------------------------------------------------------
+    - name: Show uptime info 
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} - {{ uptime_check.stdout | default('N/A') }}"
