@@ -4,10 +4,12 @@
   become: true
   become_user: root
   gather_facts: yes
+  strategy: linear
+  serial: 5
 
   vars:
     ansible_remote_tmp: /tmp
-    consolidated_report_path: linux_patch_report.json
+    consolidated_report_path: "{{ consolidated_report_path }}"
 
   tasks:
 # Initial Facts ----------------------------------------------
@@ -92,25 +94,23 @@
             manager: auto
           register: ubuntu_facts_before
 
-        - name: Preview packages that WOULD be upgraded (Ubuntu)
-          ansible.builtin.package:
-            name: "*"
-            state: latest
-          check_mode: true
+        - name: Update apt cache
+          ansible.builtin.apt:
+            update_cache: yes
+            cache_valid_time: 0
+
+        - name: Preview upgradable packages (Ubuntu)
+          ansible.builtin.command: apt list --upgradable
           register: ubuntu_update_preview
-          ignore_errors: true
+          changed_when: false
+          failed_when: false
 
         - name: Show Ubuntu preview on console
           ansible.builtin.debug:
             msg:
               - "===== UBUNTU PREVIEW ====="
               - "Host: {{ inventory_hostname }}"
-              - "{{ ubuntu_update_preview.results | default([]) }}"
-
-        - name: Update apt cache
-          ansible.builtin.apt:
-            update_cache: yes
-            cache_valid_time: 3600
+              - "{{ ubuntu_update_preview.stdout_lines | default([]) }}"
 
         - name: Upgrade all packages (Ubuntu)
           ansible.builtin.package:
@@ -196,7 +196,7 @@
           {{
             {
               "generated_at": ansible_date_time.iso8601,
-              "hosts": play_hosts | map('extract', hostvars, 'upgrade_report_json') | list
+              "hosts": ansible_play_batch | map('extract', hostvars, 'upgrade_report_json') | list
             } | to_nice_json
           }}
       delegate_to: localhost
