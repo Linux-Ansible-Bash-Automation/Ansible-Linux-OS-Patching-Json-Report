@@ -1,6 +1,5 @@
 ---
 
-```markdown
 # Patch Linux Servers – JSON Reporting  
 ### Ansible & Bash Automation
 
@@ -241,7 +240,6 @@ This framework can be extended to:
 **Sandeep Reddy Bandela**
 Linux | Ansible | Automation
 
-```
 
----
+
 
