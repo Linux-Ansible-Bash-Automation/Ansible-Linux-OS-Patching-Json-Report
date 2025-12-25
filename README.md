@@ -237,8 +237,8 @@ This framework can be extended to:
 
 ## 👤 Author
 
-**Sandeep Reddy Bandela**
-Linux | Ansible | Automation
+* **Sandeep Reddy Bandela**
+* **Linux | Ansible | Automation**
 
 
 
