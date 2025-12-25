@@ -107,7 +107,7 @@ During execution, the Bash wrapper will prompt for:
 
 3. **Consolidated JSON Report Path**
 
-   * Example: `/tmp/patch_report.json`
+   * Example: `/tmp/patch_report.json` or current directory
 
 ---
 
