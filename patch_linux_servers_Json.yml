@@ -1,15 +1,23 @@
 ---
-- name: Patch Linux servers and generate JSON report
+- name: Patch Linux servers with preview and generate JSON report
   hosts: '*'
   become: true
   become_user: root
+  become_method: "{{ BECOME_METHOD }}"
   gather_facts: yes
   strategy: linear
-  serial: 5
+  #serial: 5
 
   vars:
-    ansible_remote_tmp: /tmp
+    ansible_remote_tmp: /tmp/.ansible-${USER}
     consolidated_report_path: "{{ consolidated_report_path }}"
+
+  pre_tasks:
+    - name: Ensure sticky bit is set on /tmp
+      ansible.builtin.file:
+        path: /tmp
+        state: directory
+        mode: "1777"
 
   tasks:
 # Initial Facts ----------------------------------------------
@@ -37,6 +45,14 @@
             manager: auto
           register: rhel_facts_before
 
+        - name: Save BEFORE facts (snapshot)
+          ansible.builtin.set_fact:
+            facts_before_upgrade: "{{ ansible_facts.packages }}"
+
+        - name: Show snapshot
+          ansible.builtin.debug:
+            msg: "Snapshot captured: {{ facts_before_upgrade | length }} packages"
+
         - name: Preview packages that WOULD be upgraded (RHEL)
           ansible.builtin.package:
             name: "*"
@@ -62,6 +78,21 @@
           ansible.builtin.package_facts:
             manager: auto
 
+        - name: Save AFTER facts (snapshot)
+          ansible.builtin.set_fact:
+            facts_after_upgrade: "{{ ansible_facts.packages }}"
+
+        - name: Show snapshot after upgrade
+          ansible.builtin.debug:
+            msg: "Snapshot after upgrade captured: {{ facts_after_upgrade | length }} packages"
+
+        - name: Install yum-utils or dnf-utils based on package manager (RHEL)
+          ansible.builtin.package:
+            name: "{{ 'dnf-utils' if ansible_pkg_mgr == 'dnf' else 'yum-utils' }}"
+            state: present
+          ignore_errors: true
+
+        # The below task won't effect server reboot logic-----------------------------------
         - name: Check if reboot is required (RHEL)
           ansible.builtin.command: needs-restarting -r
           register: rhel_reboot_check
@@ -89,15 +120,23 @@
 # DEBIAN / UBUNTU FAMILY ----------------------------------------------------------------------------------
     - name: Patch Debian/Ubuntu family
       block:
+        - name: Update apt cache
+          ansible.builtin.apt:
+            update_cache: yes
+            cache_valid_time: 0
+            
         - name: Gather package facts BEFORE upgrade (Ubuntu)
           ansible.builtin.package_facts:
             manager: auto
           register: ubuntu_facts_before
 
-        - name: Update apt cache
-          ansible.builtin.apt:
-            update_cache: yes
-            cache_valid_time: 0
+        - name: Save BEFORE facts (snapshot)
+          ansible.builtin.set_fact:
+            facts_before_upgrade: "{{ ansible_facts.packages }}"
+
+        - name: Show snapshot
+          ansible.builtin.debug:
+            msg: "Snapshot captured: {{ facts_before_upgrade | length }} packages"
 
         - name: Preview upgradable packages (Ubuntu)
           ansible.builtin.command: apt list --upgradable
@@ -117,7 +156,25 @@
             name: "*"
             state: latest
           register: ubuntu_update_result
+          ignore_errors: true
 
+        - name: Gather package facts AFTER upgrade (RHEL)
+          ansible.builtin.package_facts:
+            manager: auto
+
+        - name: Save AFTER facts (snapshot)
+          ansible.builtin.set_fact:
+            facts_after_upgrade: "{{ ansible_facts.packages }}"
+
+        - name: Show snapshot after upgrade
+          ansible.builtin.debug:
+            msg: "Snapshot after upgrade captured: {{ facts_after_upgrade | length }} packages"
+
+        #- name: Autoremove unnecessary packages (Ubuntu)
+        #  ansible.builtin.apt:
+        #    autoremove: yes
+
+        # The below task won't effect server reboot logic-----------------------------------
         - name: Check reboot-required flag (Ubuntu)
           ansible.builtin.stat:
             path: /var/run/reboot-required
@@ -146,6 +203,7 @@
         reboot_timeout: 1200
       when: upgrade_report_json.reboot.required
       register: reboot_action
+      ignore_errors: true
 
     - name: Mark reboot performed
       ansible.builtin.set_fact:
