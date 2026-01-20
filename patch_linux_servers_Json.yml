@@ -3,7 +3,6 @@
   hosts: '*'
   become: true
   become_user: root
-  become_method: "{{ BECOME_METHOD }}"
   gather_facts: yes
   strategy: linear
   #serial: 5
@@ -124,7 +123,7 @@
           ansible.builtin.apt:
             update_cache: yes
             cache_valid_time: 0
-            
+
         - name: Gather package facts BEFORE upgrade (Ubuntu)
           ansible.builtin.package_facts:
             manager: auto
